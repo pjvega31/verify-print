@@ -29,8 +29,8 @@ dependencies = [
 mesh-repair = ["pymeshlab>=2023.12"]
 cad = ["cadquery>=2.4"]
 slicer = []
-dev = ["pytest>=7.0"]
-all = ["pymeshlab>=2023.12", "cadquery>=2.4", "pytest>=7.0"]
+dev = ["pytest>=7.0", "manifold3d>=2.3"]
+all = ["pymeshlab>=2023.12", "cadquery>=2.4", "pytest>=7.0", "manifold3d>=2.3"]
 
 [project.scripts]
 verify-print = "verify_print.cli:main"
