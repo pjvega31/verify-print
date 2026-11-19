@@ -1,0 +1,17 @@
+{
+    "type": "filament",
+    "name": "Volta-PETG-Black",
+    "inherits": "Bambu PETG Basic @BBL X1C",
+    "from": "User",
+    "instantiation": "true",
+    "filament_vendor": [
+        "Volta Tech"
+    ],
+    "default_filament_colour": [
+        "#0A0A1A"
+    ],
+    "compatible_printers": [
+        "Bambu Lab P1S 0.4 nozzle"
+    ],
+    "description": "Volta Tech black PETG = Bambu PETG Basic @BBL X1C (255C, 15 mm3/s, density 1.25) with Volta colour."
+}

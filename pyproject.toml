@@ -1,0 +1,39 @@
+[build-system]
+requires = ["setuptools>=64"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "verify-print"
+version = "0.5.0"
+description = "Catch CAD, mesh and slicer-profile bugs before you waste filament"
+readme = "README.md"
+requires-python = ">=3.9"
+authors = [{name = "Pedro Vega"}]
+license = {text = "MIT"}
+keywords = ["3d-printing", "stl", "3mf", "bambu-studio", "orcaslicer", "cadquery", "trimesh"]
+classifiers = [
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Topic :: Scientific/Engineering",
+]
+dependencies = [
+    "trimesh>=4.0",
+    "numpy>=1.24",
+    # trimesh soft deps that verify-print needs: shells (graph), ray casting (thickness/orientation)
+    "networkx>=3.0",
+    "scipy>=1.10",
+    "rtree>=1.0",
+]
+
+[project.optional-dependencies]
+mesh-repair = ["pymeshlab>=2023.12"]
+cad = ["cadquery>=2.4"]
+slicer = []
+dev = ["pytest>=7.0"]
+all = ["pymeshlab>=2023.12", "cadquery>=2.4", "pytest>=7.0"]
+
+[project.scripts]
+verify-print = "verify_print.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["verify_print*"]
