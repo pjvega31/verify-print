@@ -4,7 +4,7 @@
 
 `verify-print` is a command-line tool and Python library that checks an FDM print job *before* it reaches the printer: the STL mesh, the CadQuery parameters behind it, the slicer profile, and downloaded 3MF projects. Every check is deterministic, runs in seconds, and returns a CI-friendly exit code.
 
-![verify-print failing a part whose four alignment posts were never fused to the body (5 disconnected shells), then passing the fixed part](docs/demo.svg)
+![verify-print failing a part whose four alignment posts were never fused to the body (5 disconnected shells), then passing the fixed part](https://raw.githubusercontent.com/pjvega31/verify-print/main/docs/demo.svg)
 
 <sub>Real output, not a mock-up: `python scripts/make_demo.py` rebuilds both parts and redraws this image.</sub>
 
@@ -19,7 +19,7 @@ It came out of a real enclosure project at Volta Tech PR that went through four 
 | Real bug | Check that catches it |
 |---|---|
 | Cable opening modelled on the front face instead of the back | `orientation` |
-| Magnet pockets left a 0.2 mm floor that cracked | `thickness` (partial — see [design note](docs/thin-pocket-detection.md)) |
+| Magnet pockets left a 0.2 mm floor that cracked | `thickness` (partial — see [design note](https://github.com/pjvega31/verify-print/blob/main/docs/thin-pocket-detection.md)) |
 | A hollow filament profile fell back to 2 mm³/s volumetric speed: **44 h instead of 22 h** | `slice --min-speed`, `project` |
 | 18 magnet parameters still defined after the magnet code was commented out | `params` |
 | Alignment posts and magnet pockets indistinguishable in the slicer preview | `feature_color` (library) |
@@ -28,11 +28,13 @@ It came out of a real enclosure project at Volta Tech PR that went through four 
 ## Install
 
 ```bash
-pip install -e .                 # mesh, params, info, thickness, orientation, slice, project, compare
-pip install -e ".[mesh-repair]"  # + PyMeshLab deep checks and repair
-pip install -e ".[cad]"          # + CadQuery feature-color export
-pip install -e ".[all]"          # everything, including pytest
+pip install verify-print                  # mesh, params, info, thickness, orientation, slice, project, compare
+pip install "verify-print[mesh-repair]"   # + PyMeshLab deep checks and repair
+pip install "verify-print[cad]"           # + CadQuery feature-color export
+pip install "verify-print[all]"           # everything, including pytest
 ```
+
+To work on the code instead, clone the repo and run `pip install -e ".[dev]"`.
 
 Python ≥ 3.9. Slicing uses **Bambu Studio 2.8** (default) or **OrcaSlicer 2.3** (`--slicer orca`) installed at the standard macOS path (`/Applications/…`). Slicing on Linux/Windows is not wired up yet — the mesh, params, info and 3MF-settings checks work everywhere.
 
@@ -103,7 +105,7 @@ export_features(
 
 ## Bundled slicer profiles
 
-`profiles/bambu/src/` holds PETG overrides for a Bambu Lab P1S with a 0.4 mm nozzle. The Bambu Studio CLI does not resolve `inherits` in user JSON, so `flatten.py` merges them onto your locally installed Bambu system profiles into `flat/` — generated on your machine, not shipped, because those base profiles are Bambu's (AGPL-3.0). See [profiles/bambu/README.md](profiles/bambu/README.md) for the measured time differences and the CLI gotchas.
+`profiles/bambu/src/` holds PETG overrides for a Bambu Lab P1S with a 0.4 mm nozzle. The Bambu Studio CLI does not resolve `inherits` in user JSON, so `flatten.py` merges them onto your locally installed Bambu system profiles into `flat/` — generated on your machine, not shipped, because those base profiles are Bambu's (AGPL-3.0). See [profiles/bambu/README.md](https://github.com/pjvega31/verify-print/blob/main/profiles/bambu/README.md) for the measured time differences and the CLI gotchas.
 
 ## Known limitations
 
@@ -127,10 +129,10 @@ The test suite needs no slicer installed (slicer output parsing and command buil
 
 ## Contributing
 
-Bug reports with the failing STL or 3MF attached are the most useful thing you can send — see [CONTRIBUTING.md](CONTRIBUTING.md).
+Bug reports with the failing STL or 3MF attached are the most useful thing you can send — see [CONTRIBUTING.md](https://github.com/pjvega31/verify-print/blob/main/CONTRIBUTING.md).
 
 ## License
 
-MIT — see [LICENSE](LICENSE). Optional extras keep their own licenses: PyMeshLab is GPL-3.0, CadQuery is Apache-2.0. Bambu Studio and OrcaSlicer (AGPL-3.0) are called as external programs, never bundled.
+MIT — see [LICENSE](https://github.com/pjvega31/verify-print/blob/main/LICENSE). Optional extras keep their own licenses: PyMeshLab is GPL-3.0, CadQuery is Apache-2.0. Bambu Studio and OrcaSlicer (AGPL-3.0) are called as external programs, never bundled.
 
 Maintained as time allows; issues and PRs are reviewed but response times vary.
