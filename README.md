@@ -4,6 +4,10 @@
 
 `verify-print` is a command-line tool and Python library that checks an FDM print job *before* it reaches the printer: the STL mesh, the CadQuery parameters behind it, the slicer profile, and downloaded 3MF projects. Every check is deterministic, runs in seconds, and returns a CI-friendly exit code.
 
+![verify-print failing a part whose four alignment posts were never fused to the body (5 disconnected shells), then passing the fixed part](docs/demo.svg)
+
+<sub>Real output, not a mock-up: `python scripts/make_demo.py` rebuilds both parts and redraws this image.</sub>
+
 Built and used in production at **Volta Tech PR**, a 3D-printing shop in Puerto Rico running a small print farm (Bambu Lab P1S, Prusa XL, Anycubic Kobra).
 
 > *Español:* hecho y usado en producción en **Volta Tech PR**, Puerto Rico. `verify-print` revisa el modelo, los parámetros CAD y el perfil del slicer **antes** de imprimir, para no perder horas de impresión ni filamento. Las instrucciones de abajo están en inglés; los issues en español son bienvenidos.
