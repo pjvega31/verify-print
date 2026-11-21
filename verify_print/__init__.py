@@ -12,7 +12,7 @@ Modules:
 - feature_color: CadQuery Assembly multi-color export (optional extra)
 """
 
-__version__ = "0.5.0"
+__version__ = "0.6.0"
 
 from verify_print.iteration_compare import CompareReport, compare_reports
 from verify_print.mesh_info import MeshInfoReport, mesh_info

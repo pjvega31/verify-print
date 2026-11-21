@@ -8,10 +8,15 @@ changed from the stock profile, and (optionally) runs the Bambu Studio CLI to
 get the per-plate time + the per-feature breakdown so the culprit is named.
 
 Rules (severity: FAIL blocks, WARN needs a look, INFO is just so you know):
-  R1  filament_max_volumetric_speed < 5 mm^3/s      FAIL  (the 44h-vs-22h bug)
+  R0  no slicer settings in the file                FAIL  (nothing could be checked)
+  R1  filament max volumetric speed below the floor FAIL  when a custom profile or the
+      for the nozzle (5 mm^3/s at 0.4 mm and up,          project set it (the 44h-vs-22h bug);
+      0.5 mm^3/s at 0.2 mm)                         INFO  when it is the stock profile's own
+                                                          value or the slot is not in use
   R2  layer_height < 0.16 mm                        WARN  (x1.5-2.5 time)
   R3  sparse_infill_density > 30% or wall_loops > 4 WARN  (decorative parts)
   R4  enable_support on                             WARN  (only if the part needs it)
+      R2/R3/R4/R6 also run on per-object overrides stored in model_settings.config
   R5  default / outer-wall acceleration < 2000      WARN  (draft/foreign profile)
   R6  fuzzy_skin on                                 INFO  (+30-60% outer-wall time)
   R7  different_settings_to_system                  INFO  (everything the project changed)
@@ -43,11 +48,19 @@ from verify_print.slicer_simulate import (
 )
 
 # ---------- thresholds (single place to tune) ----------
-MIN_VOLUMETRIC_SPEED = 5.0      # mm^3/s
+MIN_VOLUMETRIC_SPEED = 5.0      # mm^3/s, for a 0.4 mm nozzle and larger (see _speed_floor)
+MIN_VOLUMETRIC_SPEED_SMALL_NOZZLE = 0.5   # mm^3/s, for a 0.2 mm nozzle
+REFERENCE_NOZZLE = 0.4          # mm
+SMALL_NOZZLE = 0.2              # mm
 MIN_LAYER_HEIGHT = 0.16         # mm
 MAX_INFILL_PCT = 30.0           # %
 MAX_WALL_LOOPS = 4
 MIN_ACCELERATION = 2000.0       # mm/s^2 (BBL stock is 6000-10000)
+
+# Per-object overrides in model_settings.config that the time rules understand.
+OVERRIDE_KEYS = ("layer_height", "sparse_infill_density", "wall_loops", "enable_support",
+                 "support_type", "support_style", "fuzzy_skin",
+                 "fuzzy_skin_point_distance", "fuzzy_skin_thickness")
 
 
 @dataclass
@@ -107,7 +120,12 @@ class ProjectReport:
                 lines.append(f"  {sev} ({len(group)}):")
                 for f in group:
                     lines.append(f"    [{f.rule}] {f.message}")
-        lines.append("  PASS — ready to print" if self.passed else "  BLOCKED — fix FAIL items before printing")
+        if any(f.rule == "R0" and f.severity == "FAIL" for f in self.findings):
+            lines.append("  NOT CHECKED — this file carries no slicer settings to check")
+        elif self.passed:
+            lines.append("  PASS — no blocking settings found")
+        else:
+            lines.append("  BLOCKED — fix FAIL items before printing")
         return "\n".join(lines)
 
 
@@ -136,6 +154,39 @@ def _nums(v: Any) -> List[float]:
     return out
 
 
+def _int(v: Any, default: int) -> int:
+    try:
+        return int(str(v).strip())
+    except (TypeError, ValueError):
+        return default
+
+
+def _speed_floor(nozzle_mm: Optional[float]) -> float:
+    """Volumetric-speed floor for a nozzle size, in mm^3/s.
+
+    Anchored on the stock Bambu Studio 2.8 filament profiles, where the 10th percentile of
+    filament_max_volumetric_speed is 6 at a 0.4 mm nozzle and 0.5 at a 0.2 mm nozzle (a
+    0.2 mm nozzle is not a quarter of the flow in practice, it is closer to a tenth).
+    Floors: 5.0 at 0.4 mm and above, 0.5 at 0.2 mm and below, linear in between.
+    """
+    if not nozzle_mm or nozzle_mm >= REFERENCE_NOZZLE:
+        return MIN_VOLUMETRIC_SPEED
+    if nozzle_mm <= SMALL_NOZZLE:
+        return MIN_VOLUMETRIC_SPEED_SMALL_NOZZLE
+    t = (nozzle_mm - SMALL_NOZZLE) / (REFERENCE_NOZZLE - SMALL_NOZZLE)
+    return round(MIN_VOLUMETRIC_SPEED_SMALL_NOZZLE + t * (MIN_VOLUMETRIC_SPEED - MIN_VOLUMETRIC_SPEED_SMALL_NOZZLE), 2)
+
+
+def _looks_stock(preset_name: str) -> bool:
+    """Bambu Studio / OrcaSlicer system presets are named '<material> @<vendor/printer>'.
+
+    This is a naming heuristic, chosen over reading the locally installed profiles so the
+    verdict is the same on every machine (CI included). A custom preset that keeps the
+    '@...' suffix and leaves no trace in different_settings_to_system is treated as stock.
+    """
+    return " @" in preset_name
+
+
 def _as_list(v: Any) -> List[str]:
     if v is None:
         return []
@@ -143,25 +194,49 @@ def _as_list(v: Any) -> List[str]:
 
 
 def read_project(threemf: Path) -> Dict[str, Any]:
-    """Return {'settings': dict, 'plates': [PlateInfo], 'slice_info': dict}."""
+    """Parse the two config members of a Bambu Studio / Orca 3MF.
+
+    Returns a dict with:
+      settings              project_settings.config as a dict ({} when the member is absent)
+      has_settings          False for a 3MF without slicer settings (e.g. a plain CAD export)
+      plates                [PlateInfo]
+      objects               one dict per object placed on a plate:
+                            {"name", "extruders" (object + part level), "overrides"}
+      model_settings_error  parse error text when model_settings.config is malformed
+    """
     with zipfile.ZipFile(threemf, "r") as zf:
         names = set(zf.namelist())
         settings: Dict[str, Any] = {}
-        if "Metadata/project_settings.config" in names:
+        has_settings = "Metadata/project_settings.config" in names
+        if has_settings:
             settings = json.loads(read_member(zf, "Metadata/project_settings.config"))
         plates: List[PlateInfo] = []
+        placed: List[Dict[str, Any]] = []
+        model_settings_error: Optional[str] = None
         if "Metadata/model_settings.config" in names:
-            root = ET.fromstring(read_member(zf, "Metadata/model_settings.config"))
+            try:
+                root = ET.fromstring(read_member(zf, "Metadata/model_settings.config"))
+            except ET.ParseError as e:
+                root = None
+                model_settings_error = str(e)
             objects: Dict[str, Dict[str, Any]] = {}
-            for obj in root.findall("object"):
+            for obj in (root.findall("object") if root is not None else []):
                 meta = {m.get("key"): m.get("value") for m in obj.findall("metadata")}
+                extruder = _int(meta.get("extruder"), 1)
+                extruders = {extruder}
+                for part in obj.findall("part"):
+                    pmeta = {m.get("key"): m.get("value") for m in part.findall("metadata")}
+                    if pmeta.get("extruder"):
+                        extruders.add(_int(pmeta.get("extruder"), extruder))
                 objects[obj.get("id")] = {
                     "name": meta.get("name", f"object {obj.get('id')}"),
-                    "extruder": int(meta.get("extruder", "1") or 1),
+                    "extruder": extruder,
+                    "extruders": sorted(extruders),
+                    "overrides": {k: meta[k] for k in OVERRIDE_KEYS if meta.get(k) is not None},
                 }
-            for plate in root.findall("plate"):
+            for plate in (root.findall("plate") if root is not None else []):
                 meta = {m.get("key"): m.get("value") for m in plate.findall("metadata")}
-                idx = int(meta.get("plater_id", len(plates) + 1))
+                idx = _int(meta.get("plater_id"), len(plates) + 1)
                 objs, exts = [], []
                 for inst in plate.findall("model_instance"):
                     imeta = {m.get("key"): m.get("value") for m in inst.findall("metadata")}
@@ -169,42 +244,102 @@ def read_project(threemf: Path) -> Dict[str, Any]:
                     if o:
                         objs.append(o["name"])
                         exts.append(o["extruder"])
+                        if o not in placed:
+                            placed.append(o)
                 plates.append(PlateInfo(index=idx, objects=objs, extruders=exts))
-    return {"settings": settings, "plates": plates}
+    return {"settings": settings, "has_settings": has_settings, "plates": plates,
+            "objects": placed, "model_settings_error": model_settings_error}
 
 
 # ---------- rules ----------
 
-def check_settings(s: Dict[str, Any], expected_printer: Optional[str] = None) -> List[Finding]:
+def _time_rules(s: Dict[str, Any], where: str = "") -> List[Finding]:
+    """R2/R3/R4/R6 on a settings dict: the project's globals, or one object's overrides."""
     out: List[Finding] = []
-
-    # R1 volumetric speed — the one that turned 22h into 44h
-    speeds = _nums(s.get("filament_max_volumetric_speed"))
-    low = [v for v in speeds if v < MIN_VOLUMETRIC_SPEED]
-    if low:
-        out.append(Finding("R1", "FAIL",
-            f"filament_max_volumetric_speed = {speeds} mm^3/s — below {MIN_VOLUMETRIC_SPEED} "
-            f"(hollow/unresolved filament profile; this is the 44h-vs-22h bug)", speeds))
 
     # R2 layer height
     lh = _num(s.get("layer_height"))
-    if lh is not None and lh < MIN_LAYER_HEIGHT:
+    if lh is not None and 0 < lh < MIN_LAYER_HEIGHT:
         out.append(Finding("R2", "WARN",
-            f"layer_height = {lh} mm — below {MIN_LAYER_HEIGHT}; expect x{round(0.2/lh, 1)} print time vs 0.20", lh))
+            f"{where}layer_height = {lh} mm — below {MIN_LAYER_HEIGHT}; expect x{round(0.2/lh, 1)} print time vs 0.20", lh))
 
     # R3 infill / walls
     inf = _num(s.get("sparse_infill_density"))
     if inf is not None and inf > MAX_INFILL_PCT:
         out.append(Finding("R3", "WARN",
-            f"sparse_infill_density = {inf:g}% — above {MAX_INFILL_PCT:g}%; decorative parts rarely need it", inf))
+            f"{where}sparse_infill_density = {inf:g}% — above {MAX_INFILL_PCT:g}%; decorative parts rarely need it", inf))
     wl = _num(s.get("wall_loops"))
     if wl is not None and wl > MAX_WALL_LOOPS:
-        out.append(Finding("R3", "WARN", f"wall_loops = {wl:g} — above {MAX_WALL_LOOPS}", wl))
+        out.append(Finding("R3", "WARN", f"{where}wall_loops = {wl:g} — above {MAX_WALL_LOOPS}", wl))
 
     # R4 supports
     if _num(s.get("enable_support")) == 1:
+        kind = ", ".join(str(s[k]) for k in ("support_type", "support_style") if s.get(k))
         out.append(Finding("R4", "WARN",
-            f"supports enabled ({s.get('support_type')}, {s.get('support_style')}) — confirm the part needs them", True))
+            f"{where}supports enabled{f' ({kind})' if kind else ''} — confirm the part needs them", True))
+
+    # R6 fuzzy skin
+    fz = s.get("fuzzy_skin")
+    if fz and str(fz).lower() not in ("none", "0", ""):
+        out.append(Finding("R6", "INFO",
+            f"{where}fuzzy_skin = {fz} (point {s.get('fuzzy_skin_point_distance')} mm, thickness "
+            f"{s.get('fuzzy_skin_thickness')} mm) — +30-60% outer-wall time; keep if the look needs it", fz))
+    return out
+
+
+def _volumetric_speed_rule(s: Dict[str, Any], min_speed: Optional[float],
+                           used_filaments: Optional[set]) -> List[Finding]:
+    """R1 — a low filament_max_volumetric_speed caps every move (22 h became 44 h once).
+
+    A low number is only a problem when somebody *set* it. Stock profiles for 0.2 mm
+    nozzles and flexible filaments legitimately sit at 0.5-4 mm^3/s, so the rule asks
+    where the value came from before it blocks:
+      - stock-named preset, value not listed as changed -> INFO (that profile's own value)
+      - slot not assigned to any object                 -> INFO
+      - custom preset, or the project changed the value -> FAIL
+    `min_speed` replaces the nozzle-based floor as given.
+    """
+    out: List[Finding] = []
+    raw = s.get("filament_max_volumetric_speed")
+    raw = raw if isinstance(raw, list) else [raw]
+    names = _as_list(s.get("filament_settings_id"))
+    diffs = _as_list(s.get("different_settings_to_system"))
+    nozzles = _nums(s.get("nozzle_diameter"))
+    nozzle = min(nozzles) if nozzles else None
+    floor = min_speed if min_speed is not None else _speed_floor(nozzle)
+    nozzle_txt = f" for a {nozzle:g} mm nozzle" if nozzle and min_speed is None else ""
+
+    for i, item in enumerate(raw):
+        v = _num(item)
+        if v is None or v >= floor:
+            continue
+        slot = i + 1
+        name = names[i] if i < len(names) else "unknown preset"
+        # layout: [process, filament 1..N, (printer)]
+        changed = slot < len(diffs) and "filament_max_volumetric_speed" in diffs[slot].split(";")
+        label = f"filament {slot} ({name}): max volumetric speed {v:g} mm^3/s"
+        if _looks_stock(name) and not changed:
+            out.append(Finding("R1", "INFO",
+                f"{label} — this stock profile's own value; print speed will be flow-limited, "
+                f"which is normal for small nozzles and flexible filaments", v))
+        elif used_filaments is not None and slot not in used_filaments:
+            out.append(Finding("R1", "INFO",
+                f"{label} — below {floor:g}{nozzle_txt}, but this slot is not assigned to any object "
+                f"(painted colours are not detected)", v))
+        else:
+            why = "the project changed it from the stock profile" if changed else "set by a custom profile"
+            out.append(Finding("R1", "FAIL",
+                f"{label} — below {floor:g}{nozzle_txt} and {why}; "
+                f"the slicer caps every move to this flow", v))
+    return out
+
+
+def check_settings(s: Dict[str, Any], expected_printer: Optional[str] = None, *,
+                   min_speed: Optional[float] = None,
+                   used_filaments: Optional[set] = None) -> List[Finding]:
+    out: List[Finding] = _volumetric_speed_rule(s, min_speed, used_filaments)
+    time_findings = _time_rules(s)
+    out += [f for f in time_findings if f.rule != "R6"]
 
     # R5 accelerations
     for key in ("default_acceleration", "outer_wall_acceleration", "inner_wall_acceleration", "travel_acceleration"):
@@ -216,15 +351,14 @@ def check_settings(s: Dict[str, Any], expected_printer: Optional[str] = None) ->
                 f"(draft/foreign profile, ~x1.5-2 time)", a))
 
     # R6 fuzzy skin
-    fz = s.get("fuzzy_skin")
-    if fz and str(fz).lower() not in ("none", "0", ""):
-        out.append(Finding("R6", "INFO",
-            f"fuzzy_skin = {fz} (point {s.get('fuzzy_skin_point_distance')} mm, thickness "
-            f"{s.get('fuzzy_skin_thickness')} mm) — +30-60% outer-wall time; keep if the look needs it", fz))
+    out += [f for f in time_findings if f.rule == "R6"]
 
     # R7 what the project changed vs stock profiles
     diffs = _as_list(s.get("different_settings_to_system"))
-    labels = ["process"] + [f"filament {i}" for i in range(1, len(diffs))]
+    n_fil = len(_as_list(s.get("filament_settings_id")))
+    # Bambu Studio writes [process, filament 1..N, printer]
+    labels = ["process"] + [f"filament {i}" for i in range(1, n_fil + 1)] + ["printer"]
+    labels += [f"preset {i}" for i in range(len(labels) + 1, len(diffs) + 1)]
     for label, d in zip(labels, diffs):
         keys = [k for k in d.split(";") if k]
         if not keys:
@@ -297,13 +431,30 @@ def slice_project(threemf: Path, *, slicer_bin: str = DEFAULT_BAMBU_BIN,
 
 def check_project(threemf: Path | str, *, expected_printer: Optional[str] = None,
                   do_slice: bool = False, max_hours: Optional[float] = None,
+                  min_speed: Optional[float] = None,
                   slicer_bin: str = DEFAULT_BAMBU_BIN, timeout_seconds: int = 900) -> ProjectReport:
     threemf = Path(threemf)
     data = read_project(threemf)
     s = data["settings"]
-    findings = check_settings(s, expected_printer)
     plates: List[PlateInfo] = data["plates"]
+    placed: List[Dict[str, Any]] = data["objects"]
     sliced = False
+
+    findings: List[Finding] = []
+    if not data["has_settings"]:
+        findings.append(Finding("R0", "FAIL",
+            "no Bambu Studio / OrcaSlicer settings in this 3MF (Metadata/project_settings.config "
+            "is missing) — nothing was checked. Open it in the slicer and save it as a project first."))
+    if data["model_settings_error"]:
+        findings.append(Finding("R0", "WARN",
+            f"model_settings.config is not valid XML ({data['model_settings_error']}) — plates, "
+            f"filament usage and per-object overrides were not checked"))
+
+    used = {e for o in placed for e in o["extruders"]} or None
+    findings += check_settings(s, expected_printer, min_speed=min_speed, used_filaments=used)
+    for o in placed:
+        if o["overrides"]:
+            findings += _time_rules(o["overrides"], where=f"object '{o['name']}' overrides: ")
 
     if do_slice:
         try:

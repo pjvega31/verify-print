@@ -242,6 +242,7 @@ def _cmd_project(args: argparse.Namespace) -> int:
             expected_printer=args.printer,
             do_slice=args.slice,
             max_hours=args.max_hours,
+            min_speed=args.min_speed,
             timeout_seconds=args.timeout,
         )
     except (zipfile.BadZipFile, MemberTooLarge, ValueError) as e:
@@ -518,6 +519,9 @@ def main(argv: list[str] | None = None) -> int:
     p_project.add_argument("--printer", default=None,
                            help='expected printer preset, e.g. "Bambu Lab P1S 0.4 nozzle" (R8)')
     p_project.add_argument("--max-hours", type=float, default=None, help="FAIL if any plate exceeds (needs --slice)")
+    p_project.add_argument("--min-speed", type=float, default=None,
+                           help="volumetric-speed floor in mm^3/s for custom or changed filament profiles "
+                                "(default: 5.0 at a 0.4 mm nozzle and larger, 0.5 at 0.2 mm)")
     p_project.add_argument("--timeout", type=int, default=900)
     p_project.set_defaults(func=_cmd_project)
 
